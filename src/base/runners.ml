@@ -306,9 +306,17 @@ struct
      fun ~run ~f ~input_typ ~return_typ ?handlers k ->
       conv
         (fun num_inputs output c primary ->
+          let (_ : unit) =
+            Internal_tracing.Block_tracing.Production.Proof_timings.push_global
+              `Produce_state_transition_proof_generate_witness_conv_auxilary_input
+          in
           let auxiliary, output =
             auxiliary_input ~run ?handlers ~return_typ ~output ~num_inputs c
               primary
+          in
+          let (_ : unit) =
+            Internal_tracing.Block_tracing.Production.Proof_timings.push_global
+              `Produce_state_transition_proof_generate_witness_conv_auxilary_input_done
           in
           let output =
             let (Typ return_typ) = return_typ in
@@ -323,11 +331,12 @@ struct
             let fields = Array.map ~f:read_cvar fields in
             return_typ.value_of_fields (fields, aux)
           in
-          f
+          let res = f
             { Proof_inputs.public_inputs = primary
             ; auxiliary_inputs = auxiliary
             }
-            output )
+            output in
+          res)
         input_typ return_typ
         (fun () -> k)
 
