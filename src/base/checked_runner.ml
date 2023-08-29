@@ -110,12 +110,10 @@ struct
   open Constraint
   open Backend
 
-  let tracked_get_value (t : Field.t Run_state.t) : Cvar.t -> Field.t =
-    let get_one i =
-      Witness_tracing.track_access t i ;
-      Run_state.get_variable_value t i
-    in
-    Cvar.eval (`Return_values_will_be_mutated get_one)
+  let tracked_get_value (t : Field.t Run_state.t) (c : Cvar.t) : Field.t =
+    let get_one i = Run_state.get_variable_value t i in
+    Witness_tracing.track_access t (Cvar.sexp_of_t c) ;
+    Cvar.eval (`Return_values_will_be_mutated get_one) c
 
   let get_value (t : Field.t Run_state.t) : Cvar.t -> Field.t =
     let get_one i = Run_state.get_variable_value t i in

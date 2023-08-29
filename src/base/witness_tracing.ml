@@ -2,29 +2,46 @@ open Core_kernel
 
 let render_writes = Option.is_none (Sys.getenv_opt "SKIP_WITNESS_RESULTS")
 
-module Witness_access = struct
-  type t = Witness of int | Public_input of int
+module Cvar_access = struct
+  (* TODO: add field values to Constant and Scale *)
+  type t =
+    | Witness of int
+    | Public_input of int
+    | Constant
+    | Add of t * t
+    | Scale of t
+  [@@deriving compare]
 
-  let compare a b =
-    match (a, b) with
-    | Witness a, Witness b ->
-        Int.compare a b
-    | Public_input a, Public_input b ->
-        Int.compare a b
-    | Witness _, Public_input _ ->
-        -1
-    | Public_input _, Witness _ ->
-        1
-
-  let sexp_of_t : t -> Sexp.t = function
+  let rec sexp_of_t : t -> Sexp.t = function
     | Witness i ->
         List [ Atom "w"; Int.sexp_of_t i ]
     | Public_input i ->
         List [ Atom "p"; Int.sexp_of_t i ]
+    | Constant ->
+        Atom "const"
+    | Add (a, b) ->
+        List [ Atom "add"; sexp_of_t a; sexp_of_t b ]
+    | Scale c ->
+        List [ Atom "scale"; sexp_of_t c ]
 
   let of_int s i =
     let num_inputs = Run_state.num_inputs s in
     if i < num_inputs then Public_input i else Witness (i - num_inputs)
+
+  let rec of_cvar_sexp s (cs : Sexp.t) =
+    match cs with
+    | List [ Atom "Constant"; _ ] ->
+        Constant
+    | List [ Atom "Var"; Atom n ] ->
+        of_int s (int_of_string n)
+    | List [ Atom "Add"; a; b ] ->
+        Add (of_cvar_sexp s a, of_cvar_sexp s b)
+    | List [ Atom "Scale"; _; cs ] ->
+        Scale (of_cvar_sexp s cs)
+    | other ->
+        eprintf "+++ Unexpected Cvar sexp found during witness tracing: %s\n%!"
+          (Sexp.to_string_hum other) ;
+        assert false
 end
 
 module Exists = struct
@@ -35,7 +52,7 @@ module Exists = struct
     if render_writes then Int.sexp_of_t i else Int.sexp_of_t i
 
   type t =
-    { mutable accesses : Witness_access.t list [@sexp.omit_nil]
+    { mutable accesses : Cvar_access.t list [@sexp.omit_nil]
     ; mutable results : result list [@sexp.omit_nil]
     }
   [@@deriving sexp_of]
@@ -80,12 +97,12 @@ module Call = struct
 
   let exists_stack = ref []
 
-  let track_read s i =
+  let track_read s cvar =
     let open Exists in
     if Run_state.has_witness s then
       try
         let exists = List.hd_exn !exists_stack in
-        exists.accesses <- Witness_access.of_int s i :: exists.accesses
+        exists.accesses <- Cvar_access.of_cvar_sexp s cvar :: exists.accesses
       with _ -> ()
   (* TODO: log a warning if this happens *)
 
@@ -104,7 +121,7 @@ module Call = struct
     exists_stack := List.tl_exn !exists_stack ;
     (* TODO: reverse reads? *)
     (*exists.accesses <-
-      List.dedup_and_sort ~compare:Witness_access.compare exists.accesses ;*)
+      List.dedup_and_sort ~compare:Cvar_access.compare exists.accesses ;*)
     exists.results <- List.rev exists.results
 end
 
@@ -146,7 +163,7 @@ let dump_current job_str filename =
   let label = Option.value ~default:"(none)" @@ List.hd (Run_state.stack s) in
   let indent_str = String.make (Int.max 0 (indent - 2)) ' ' in
   let inputs_sexp =
-    List.sexp_of_t Witness_access.sexp_of_t Witness_access.(get ())
+    List.sexp_of_t Cvar_access.sexp_of_t Cvar_access.(get ())
   in
   eprintf "%s%s: {\n" indent_str label ;
   (* (*if List.length !stored_fields <= 1 then
