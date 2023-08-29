@@ -78,6 +78,8 @@ let dump (t : _ t) =
     t.is_running !(t.as_prover) t.has_witness t.eval_constraints t.num_inputs
     !(t.next_auxiliary)
 
+let num_inputs { num_inputs; _} = num_inputs
+
 let get_variable_value { num_inputs; input; aux; _ } : int -> 'field =
  fun i ->
   if i < num_inputs then Vector.get input i else Vector.get aux (i - num_inputs)

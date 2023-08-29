@@ -110,6 +110,13 @@ struct
   open Constraint
   open Backend
 
+  let tracked_get_value (t : Field.t Run_state.t) : Cvar.t -> Field.t =
+    let get_one i =
+      Witness_tracing.track_access t i ;
+      Run_state.get_variable_value t i
+    in
+    Cvar.eval (`Return_values_will_be_mutated get_one)
+
   let get_value (t : Field.t Run_state.t) : Cvar.t -> Field.t =
     let get_one i = Run_state.get_variable_value t i in
     Cvar.eval (`Return_values_will_be_mutated get_one)
@@ -163,11 +170,13 @@ struct
     Function
       (fun s ->
         let stack = Run_state.stack s in
+        Witness_tracing.Label.enter lab ;
         Option.iter (Run_state.log_constraint s) ~f:(fun f ->
             f ~at_label_boundary:(`Start, lab) None ) ;
         let s', y = Simple.eval (t ()) (Run_state.set_stack s (lab :: stack)) in
         Option.iter (Run_state.log_constraint s) ~f:(fun f ->
             f ~at_label_boundary:(`End, lab) None ) ;
+        Witness_tracing.Label.exit () ;
         (Run_state.set_stack s' stack, y) )
 
   let log_constraint { basic; _ } s =
@@ -255,8 +264,9 @@ struct
         if Run_state.has_witness s then (
           let old = Run_state.as_prover s in
           Run_state.set_as_prover s true ;
+          Witness_tracing.begin_exists_call () ;
           let value =
-            As_prover.Provider.run p (Run_state.stack s) (get_value s)
+            As_prover.Provider.run p (Run_state.stack s) (tracked_get_value s)
               (Run_state.handler s)
           in
           Run_state.set_as_prover s old ;
@@ -267,7 +277,12 @@ struct
                    storing.
                 *)
                 Cvar.constant
-              else Run_state.store_field_elt s
+              else fun f ->
+                let index =
+                  Run_state.next_auxiliary s - Run_state.num_inputs s
+                in
+                Witness_tracing.track_write ~index (Backend.Field.to_string f) ;
+                Run_state.store_field_elt s f
             in
             let fields, aux = value_to_fields value in
             let field_vars = Array.map ~f:store_value fields in
@@ -275,6 +290,7 @@ struct
           in
           (* TODO: Push a label onto the stack here *)
           let s, () = Simple.eval (check var) s in
+          Witness_tracing.end_exists_call () ;
           (s, { Handle.var; value = Some value }) )
         else
           let var =

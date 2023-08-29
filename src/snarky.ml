@@ -30,3 +30,5 @@ module Snark0 = Snarky_backendless.Snark0
 module Snark_intf = Snarky_backendless.Snark_intf
 module Typ = Snarky_backendless.Typ
 module Types = Snarky_backendless.Types
+
+module Witness_tracing = Snarky_backendless.Witness_tracing

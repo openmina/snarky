@@ -30,3 +30,5 @@ module Snark0 = Snark0
 module Snark_intf = Snark_intf
 module Typ = Typ
 module Types = Types
+
+module Witness_tracing = Witness_tracing

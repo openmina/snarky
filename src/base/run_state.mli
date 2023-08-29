@@ -38,6 +38,8 @@ val make :
 (** dumps some information about a state [t] *)
 val dump : 'field t -> string
 
+val num_inputs : 'field t -> int
+
 val get_variable_value : 'field t -> int -> 'field
 
 val store_field_elt : 'field t -> 'field -> 'field Cvar.t
