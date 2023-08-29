@@ -7,9 +7,9 @@ module Cvar_access = struct
   type t =
     | Witness of int
     | Public_input of int
-    | Constant
+    | Constant of string
     | Add of t * t
-    | Scale of t
+    | Scale of string * t
   [@@deriving compare]
 
   let rec sexp_of_t : t -> Sexp.t = function
@@ -17,12 +17,12 @@ module Cvar_access = struct
         List [ Atom "w"; Int.sexp_of_t i ]
     | Public_input i ->
         List [ Atom "p"; Int.sexp_of_t i ]
-    | Constant ->
-        Atom "const"
+    | Constant f ->
+        Atom f
     | Add (a, b) ->
         List [ Atom "add"; sexp_of_t a; sexp_of_t b ]
-    | Scale c ->
-        List [ Atom "scale"; sexp_of_t c ]
+    | Scale (f, c) ->
+        List [ Atom "scale"; Atom f; sexp_of_t c ]
 
   let of_int s i =
     let num_inputs = Run_state.num_inputs s in
@@ -30,14 +30,14 @@ module Cvar_access = struct
 
   let rec of_cvar_sexp s (cs : Sexp.t) =
     match cs with
-    | List [ Atom "Constant"; _ ] ->
-        Constant
+    | List [ Atom "Constant"; Atom f ] ->
+        Constant f
     | List [ Atom "Var"; Atom n ] ->
         of_int s (int_of_string n)
     | List [ Atom "Add"; a; b ] ->
         Add (of_cvar_sexp s a, of_cvar_sexp s b)
-    | List [ Atom "Scale"; _; cs ] ->
-        Scale (of_cvar_sexp s cs)
+    | List [ Atom "Scale"; Atom f; cs ] ->
+        Scale (f, of_cvar_sexp s cs)
     | other ->
         eprintf "+++ Unexpected Cvar sexp found during witness tracing: %s\n%!"
           (Sexp.to_string_hum other) ;
