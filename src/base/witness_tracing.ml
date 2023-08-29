@@ -14,9 +14,9 @@ module Cvar_access = struct
 
   let rec sexp_of_t : t -> Sexp.t = function
     | Witness i ->
-        List [ Atom "w"; Int.sexp_of_t i ]
+        Atom (sprintf "w[%d]" i)
     | Public_input i ->
-        List [ Atom "p"; Int.sexp_of_t i ]
+        Atom (sprintf "pub[%d]" i)
     | Constant f ->
         Atom f
     | Add (a, b) ->
@@ -70,6 +70,46 @@ module Call = struct
     ; mutable inner_calls : t list [@sexp.omit_nil]
     }
   [@@deriving sexp_of]
+
+  let rec sexp_of_t = function
+    | { label = v_label; exists_calls = [ exists_call ]; inner_calls = [] }
+      when not (String.contains v_label ' ') ->
+        (* Simple case that can be represented as a regular function call *)
+        let accesses = List.map ~f:Cvar_access.sexp_of_t exists_call.accesses in
+        let results = List.map ~f:Exists.sexp_of_result exists_call.results in
+        Sexp.(List ([ Atom v_label ] @ accesses @ [ Atom "=>" ] @ results))
+    | { label = v_label; exists_calls = [ exists_call ]; inner_calls = [] }
+      when String.is_prefix v_label ~prefix:"if_:" ->
+        (* Case for `if_` function *)
+        let accesses =
+          List.rev_map ~f:Cvar_access.sexp_of_t exists_call.accesses
+        in
+        let results = List.map ~f:Exists.sexp_of_result exists_call.results in
+        Sexp.(List ([ Atom "if_" ] @ accesses @ [ Atom "=>" ] @ results))
+    | { label = v_label
+      ; exists_calls = v_exists_calls
+      ; inner_calls = v_inner_calls
+      } ->
+        let bnds = [] in
+        let bnds =
+          match sexp_of_list sexp_of_t v_inner_calls with
+          | Sexp.List [] ->
+              bnds
+          | arg ->
+              Sexp.List [ Sexp.Atom "inner_calls"; arg ] :: bnds
+        in
+        let bnds =
+          match sexp_of_list Exists.sexp_of_t v_exists_calls with
+          | Sexp.List [] ->
+              bnds
+          | arg ->
+              Sexp.List [ Sexp.Atom "exists_calls"; arg ] :: bnds
+        in
+        let bnds =
+          let arg = sexp_of_string v_label in
+          Sexp.List [ Sexp.Atom "label"; arg ] :: bnds
+        in
+        Sexp.List bnds
 
   let empty label = { label; exists_calls = []; inner_calls = [] }
 
