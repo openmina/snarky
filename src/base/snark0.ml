@@ -644,7 +644,7 @@ struct
   end
 end
 
-(** The main functor for the monadic interface. 
+(** The main functor for the monadic interface.
     See [Run.Make] for the same thing but for the imperative interface. *)
 module Make (Backend : Backend_intf.S) = struct
   module Backend_extended = Backend_extended.Make (Backend)
@@ -1254,6 +1254,7 @@ module Run = struct
     let with_label lbl x =
       let stack = Run_state.stack !state in
       let log_constraint = Run_state.log_constraint !state in
+      Witness_tracing.Label.enter lbl ;
       state := Run_state.set_stack !state (lbl :: stack) ;
       Option.iter log_constraint ~f:(fun f ->
           f ~at_label_boundary:(`Start, lbl) None ) ;
@@ -1261,6 +1262,7 @@ module Run = struct
       Option.iter log_constraint ~f:(fun f ->
           f ~at_label_boundary:(`End, lbl) None ) ;
       state := Run_state.set_stack !state stack ;
+      Witness_tracing.Label.exit () ;
       a
 
     let inject_wrapper :
@@ -1270,8 +1272,8 @@ module Run = struct
       let inject_wrapper ~f x = f x in
       inject_wrapper ~f (x a)
 
-    (** Caches the global [state] before running [f]. 
-        It is expected that [f] will reset the global state for its own use only, 
+    (** Caches the global [state] before running [f].
+        It is expected that [f] will reset the global state for its own use only,
         hence why we need to reset it after running [f].*)
     let finalize_is_running f =
       let cached_state = !state in

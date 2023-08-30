@@ -1,6 +1,7 @@
 open Core_kernel
 
 let render_writes = Option.is_none (Sys.getenv_opt "SKIP_WITNESS_RESULTS")
+let render_empty = Option.is_some (Sys.getenv_opt "INCLUDE_EMPTY_CALLS")
 
 module Cvar_access = struct
   (* TODO: add field values to Constant and Scale *)
@@ -49,7 +50,8 @@ module Exists = struct
 
   let sexp_of_result (i, _v) =
     (* TODO: include v if render_writes is true *)
-    if render_writes then Int.sexp_of_t i else Int.sexp_of_t i
+    if render_writes then Sexp.Atom (sprintf "w[%d]" i)
+    else Sexp.Atom (sprintf "w[%d]" i)
 
   type t =
     { mutable accesses : Cvar_access.t list [@sexp.omit_nil]
@@ -60,7 +62,7 @@ module Exists = struct
   let empty () = { accesses = []; results = [] }
 
   let no_empty_accesses t =
-    not (List.is_empty t.accesses && List.is_empty t.results)
+    render_empty || not (List.is_empty t.accesses && List.is_empty t.results)
 end
 
 module Call = struct
@@ -114,7 +116,7 @@ module Call = struct
   let empty label = { label; exists_calls = []; inner_calls = [] }
 
   let no_empty_accesses t =
-    not (List.is_empty t.exists_calls && List.is_empty t.inner_calls)
+    render_empty || not (List.is_empty t.exists_calls && List.is_empty t.inner_calls)
 
   let call_stack = ref [ empty "(root)" ]
 
