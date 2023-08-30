@@ -1,6 +1,6 @@
 open Core_kernel
 
-let render_writes = Option.is_none (Sys.getenv_opt "SKIP_WITNESS_RESULTS")
+let render_writes = Option.is_some (Sys.getenv_opt "INCLUDE_WITNESS_RESULTS")
 
 let render_empty = Option.is_some (Sys.getenv_opt "INCLUDE_EMPTY_CALLS")
 
@@ -49,9 +49,8 @@ end
 module Exists = struct
   type result = int * string
 
-  let sexp_of_result (i, _v) =
-    (* TODO: include v if render_writes is true *)
-    if render_writes then Sexp.Atom (sprintf "w[%d]" i)
+  let sexp_of_result (i, v) =
+    if render_writes then Sexp.Atom (sprintf "w[%d]=%s" i v)
     else Sexp.Atom (sprintf "w[%d]" i)
 
   type t =
