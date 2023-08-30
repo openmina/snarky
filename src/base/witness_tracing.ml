@@ -1,6 +1,7 @@
 open Core_kernel
 
 let render_writes = Option.is_none (Sys.getenv_opt "SKIP_WITNESS_RESULTS")
+
 let render_empty = Option.is_some (Sys.getenv_opt "INCLUDE_EMPTY_CALLS")
 
 module Cvar_access = struct
@@ -57,12 +58,23 @@ module Exists = struct
     { mutable accesses : Cvar_access.t list [@sexp.omit_nil]
     ; mutable results : result list [@sexp.omit_nil]
     }
-  [@@deriving sexp_of]
+
+  let sexp_of_t = function
+    | { accesses = []; results } ->
+        Sexp.List ([ Sexp.Atom "push" ] @ List.map ~f:sexp_of_result results)
+    | { accesses; results = [] } ->
+        Sexp.List
+          ([ Sexp.Atom "read" ] @ List.map ~f:Cvar_access.sexp_of_t accesses)
+    | { accesses; results } ->
+        Sexp.List
+          ( [ Sexp.Atom "exists" ]
+          @ List.map ~f:Cvar_access.sexp_of_t accesses
+          @ [ Sexp.Atom "=>" ]
+          @ List.map ~f:sexp_of_result results )
 
   let empty () = { accesses = []; results = [] }
 
-  let no_empty_accesses t =
-    render_empty || not (List.is_empty t.accesses && List.is_empty t.results)
+  let no_empty_accesses t = render_empty || not (List.is_empty t.results)
 end
 
 module Call = struct
@@ -116,7 +128,8 @@ module Call = struct
   let empty label = { label; exists_calls = []; inner_calls = [] }
 
   let no_empty_accesses t =
-    render_empty || not (List.is_empty t.exists_calls && List.is_empty t.inner_calls)
+    render_empty
+    || not (List.is_empty t.exists_calls && List.is_empty t.inner_calls)
 
   let call_stack = ref [ empty "(root)" ]
 
