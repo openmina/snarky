@@ -5,7 +5,6 @@ let render_writes = Option.is_some (Sys.getenv_opt "INCLUDE_WITNESS_RESULTS")
 let render_empty = Option.is_some (Sys.getenv_opt "INCLUDE_EMPTY_CALLS")
 
 module Cvar_access = struct
-  (* TODO: add field values to Constant and Scale *)
   type t =
     | Witness of int
     | Public_input of int
@@ -49,18 +48,41 @@ end
 module Exists = struct
   type result = int * string
 
+  let is_not_consecutive (i, _) (j, _) = i + 1 <> j
+
   let sexp_of_result (i, v) =
     if render_writes then Sexp.Atom (sprintf "w[%d]=%s" i v)
     else Sexp.Atom (sprintf "w[%d]" i)
 
+  let sexp_of_result_list results =
+    match results with
+    | [] ->
+        []
+    | [ r1 ] ->
+        [ sexp_of_result r1 ]
+    | [ r1; r2 ] ->
+        [ sexp_of_result r1; sexp_of_result r2 ]
+    | results when render_writes ->
+        List.map ~f:sexp_of_result results
+    | results ->
+        results
+        |> List.group ~break:is_not_consecutive
+        |> List.concat_map ~f:(function
+             | [ one ] ->
+                 [ sexp_of_result one ]
+             | [ one; two ] ->
+                 [ sexp_of_result one; sexp_of_result two ]
+             | many ->
+                 let first_i = fst @@ List.hd_exn many in
+                 let last_i = fst @@ List.last_exn many in
+                 [ Sexp.Atom (sprintf "w[%d..%d]" first_i last_i) ] )
+
   type t =
-    { mutable accesses : Cvar_access.t list [@sexp.omit_nil]
-    ; mutable results : result list [@sexp.omit_nil]
-    }
+    { mutable accesses : Cvar_access.t list; mutable results : result list }
 
   let sexp_of_t = function
     | { accesses = []; results } ->
-        Sexp.List ([ Sexp.Atom "push" ] @ List.map ~f:sexp_of_result results)
+        Sexp.List ([ Sexp.Atom "push" ] @ sexp_of_result_list results)
     | { accesses; results = [] } ->
         Sexp.List
           ([ Sexp.Atom "read" ] @ List.map ~f:Cvar_access.sexp_of_t accesses)
@@ -77,32 +99,26 @@ module Exists = struct
 end
 
 module Call = struct
-  type t =
-    { label : string
-    ; mutable exists_calls : Exists.t list [@sexp.omit_nil]
-    ; mutable inner_calls : t list [@sexp.omit_nil]
-    }
-  [@@deriving sexp_of]
+  type label = { label : string; mutable inner_calls : t list }
+
+  and t = Label of label | Exists of Exists.t
 
   let rec sexp_of_t = function
-    | { label = v_label; exists_calls = [ exists_call ]; inner_calls = [] }
+    | Label { label = v_label; inner_calls = [ Exists exists_call ] }
       when not (String.contains v_label ' ') ->
         (* Simple case that can be represented as a regular function call *)
         let accesses = List.map ~f:Cvar_access.sexp_of_t exists_call.accesses in
-        let results = List.map ~f:Exists.sexp_of_result exists_call.results in
+        let results = Exists.sexp_of_result_list exists_call.results in
         Sexp.(List ([ Atom v_label ] @ accesses @ [ Atom "=>" ] @ results))
-    | { label = v_label; exists_calls = [ exists_call ]; inner_calls = [] }
+    | Label { label = v_label; inner_calls = [ Exists exists_call ] }
       when String.is_prefix v_label ~prefix:"if_:" ->
         (* Case for `if_` function *)
         let accesses =
           List.rev_map ~f:Cvar_access.sexp_of_t exists_call.accesses
         in
-        let results = List.map ~f:Exists.sexp_of_result exists_call.results in
+        let results = Exists.sexp_of_result_list exists_call.results in
         Sexp.(List ([ Atom "if_" ] @ accesses @ [ Atom "=>" ] @ results))
-    | { label = v_label
-      ; exists_calls = v_exists_calls
-      ; inner_calls = v_inner_calls
-      } ->
+    | Label { label = v_label; inner_calls = v_inner_calls } ->
         let bnds = [] in
         let bnds =
           match sexp_of_list sexp_of_t v_inner_calls with
@@ -111,43 +127,55 @@ module Call = struct
           | arg ->
               Sexp.List [ Sexp.Atom "inner_calls"; arg ] :: bnds
         in
-        let bnds =
-          match sexp_of_list Exists.sexp_of_t v_exists_calls with
-          | Sexp.List [] ->
-              bnds
-          | arg ->
-              Sexp.List [ Sexp.Atom "exists_calls"; arg ] :: bnds
-        in
+        (*let bnds =
+            match sexp_of_list Exists.sexp_of_t v_exists_calls with
+            | Sexp.List [] ->
+                bnds
+            | arg ->
+                Sexp.List [ Sexp.Atom "exists_calls"; arg ] :: bnds
+          in*)
         let bnds =
           let arg = sexp_of_string v_label in
           Sexp.List [ Sexp.Atom "label"; arg ] :: bnds
         in
         Sexp.List bnds
+    | Exists exists ->
+        Exists.sexp_of_t exists
 
-  let empty label = { label; exists_calls = []; inner_calls = [] }
+  let empty label = Label { label; inner_calls = [] }
 
-  let no_empty_accesses t =
-    render_empty
-    || not (List.is_empty t.exists_calls && List.is_empty t.inner_calls)
+  let no_empty_accesses = function
+    | Label t ->
+        render_empty || not (List.is_empty t.inner_calls)
+    | Exists exists ->
+        Exists.no_empty_accesses exists
 
   let call_stack = ref [ empty "(root)" ]
 
   let reset () = call_stack := [ empty "(root)" ]
 
   let push label =
-    let call = empty label in
-    let parent_call = List.hd_exn !call_stack in
-    parent_call.inner_calls <- call :: parent_call.inner_calls ;
-    call_stack := call :: !call_stack
+    let lbl = empty label in
+    match List.hd_exn !call_stack with
+    | Exists _ ->
+        prerr_endline
+          "Call.push: Got an unexpected `Exists` at top of call stack" ;
+        assert false
+    | Label parent_call ->
+        parent_call.inner_calls <- lbl :: parent_call.inner_calls ;
+        call_stack := lbl :: !call_stack
 
   let pop () =
-    let call = List.hd_exn !call_stack in
-    call.inner_calls <-
-      List.rev (List.filter ~f:no_empty_accesses call.inner_calls) ;
-    call.exists_calls <-
-      List.rev (List.filter ~f:Exists.no_empty_accesses call.exists_calls) ;
-    call_stack := List.tl_exn !call_stack ;
-    call
+    match List.hd_exn !call_stack with
+    | Exists _ ->
+        prerr_endline
+          "Call.pop: Got an unexpected `Exists` at top of call stack" ;
+        assert false
+    | Label call as lbl ->
+        call.inner_calls <-
+          List.rev (List.filter ~f:no_empty_accesses call.inner_calls) ;
+        call_stack := List.tl_exn !call_stack ;
+        lbl
 
   let exists_stack = ref []
 
@@ -162,13 +190,18 @@ module Call = struct
 
   let track_write ~index field =
     let exists = List.hd_exn !exists_stack in
-    if render_writes then exists.results <- (index, field) :: exists.results
+    exists.results <- (index, field) :: exists.results
 
   let begin_exists_call () =
-    let call = List.hd_exn !call_stack in
-    let exists = Exists.empty () in
-    call.exists_calls <- exists :: call.exists_calls ;
-    exists_stack := exists :: !exists_stack
+    match List.hd_exn !call_stack with
+    | Exists _ ->
+        prerr_endline
+          "begin_exists_call: Got an unexpected `Exists` at top of call stack" ;
+        assert false
+    | Label call ->
+        let exists = Exists.empty () in
+        call.inner_calls <- Exists exists :: call.inner_calls ;
+        exists_stack := exists :: !exists_stack
 
   let end_exists_call () =
     let exists = List.hd_exn !exists_stack in
