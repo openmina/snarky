@@ -103,6 +103,15 @@ module Call = struct
 
   and t = Label of label | Exists of Exists.t
 
+  let not_consecutive a b =
+    match (a, b) with
+    | ( Exists { accesses = []; results = [ (i, _) ] }
+      , Exists { accesses = []; results = [ (j, _) ] } )
+      when not render_writes ->
+        not (i + 1 = j)
+    | _ ->
+        true
+
   let rec sexp_of_t = function
     | Label { label = v_label; inner_calls = [ Exists exists_call ] }
       when not (String.contains v_label ' ') ->
@@ -121,19 +130,12 @@ module Call = struct
     | Label { label = v_label; inner_calls = v_inner_calls } ->
         let bnds = [] in
         let bnds =
-          match sexp_of_list sexp_of_t v_inner_calls with
+          match sexp_of_t_list v_inner_calls with
           | Sexp.List [] ->
               bnds
           | arg ->
               Sexp.List [ Sexp.Atom "inner_calls"; arg ] :: bnds
         in
-        (*let bnds =
-            match sexp_of_list Exists.sexp_of_t v_exists_calls with
-            | Sexp.List [] ->
-                bnds
-            | arg ->
-                Sexp.List [ Sexp.Atom "exists_calls"; arg ] :: bnds
-          in*)
         let bnds =
           let arg = sexp_of_string v_label in
           Sexp.List [ Sexp.Atom "label"; arg ] :: bnds
@@ -141,6 +143,20 @@ module Call = struct
         Sexp.List bnds
     | Exists exists ->
         Exists.sexp_of_t exists
+
+  and sexp_of_t_list calls =
+    Sexp.List
+      ( calls
+      |> List.group ~break:not_consecutive
+      |> List.concat_map ~f:(function
+           | [ one ] ->
+               [ sexp_of_t one ]
+           | [ one; two ] ->
+               [ sexp_of_t one; sexp_of_t two ]
+           | many ->
+               let first = List.hd_exn many in
+               let last = List.last_exn many in
+               [ sexp_of_t first; Atom "-->"; sexp_of_t last ] ) )
 
   let empty label = Label { label; inner_calls = [] }
 
