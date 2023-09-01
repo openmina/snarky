@@ -156,7 +156,9 @@ module Call = struct
            | many ->
                let first = List.hd_exn many in
                let last = List.last_exn many in
-               [ sexp_of_t first; Atom "-->"; sexp_of_t last ] ) )
+               [ List
+                   [ Atom "for"; sexp_of_t first; Atom "-->"; sexp_of_t last ]
+               ] ) )
 
   let empty label = Label { label; inner_calls = [] }
 
