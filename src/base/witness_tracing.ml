@@ -4,10 +4,26 @@ let render_writes = Option.is_some (Sys.getenv_opt "INCLUDE_WITNESS_RESULTS")
 
 let render_empty = Option.is_some (Sys.getenv_opt "INCLUDE_EMPTY_CALLS")
 
+module Trace = struct
+  type t =
+    { name : string
+    ; mutable priv_indexes : Int.Set.t
+    ; mutable trace_sexp : Sexp.t
+    }
+
+  let empty ~name () =
+    { name; priv_indexes = Int.Set.empty; trace_sexp = Sexp.Atom "empty" }
+end
+
+let current_trace = ref (Trace.empty ~name:"(root)" ())
+
+let captured_traces = ref []
+
 module Cvar_access = struct
   type t =
     | Witness of int
     | Public_input of int
+    | Private_input of int
     | Constant of string
     | Add of t * t
     | Scale of string * t
@@ -18,6 +34,8 @@ module Cvar_access = struct
         Atom (sprintf "w[%d]" i)
     | Public_input i ->
         Atom (sprintf "pub[%d]" i)
+    | Private_input i ->
+        Atom (sprintf "priv[%d]" i)
     | Constant f ->
         Atom f
     | Add (a, b) ->
@@ -27,7 +45,10 @@ module Cvar_access = struct
 
   let of_int s i =
     let num_inputs = Run_state.num_inputs s in
-    if i < num_inputs then Public_input i else Witness (i - num_inputs)
+    let wi = i - num_inputs in
+    if i < num_inputs then Public_input i
+    else if Int.Set.mem !current_trace.priv_indexes wi then Private_input wi
+    else Witness wi
 
   let rec of_cvar_sexp s (cs : Sexp.t) =
     match cs with
@@ -51,8 +72,9 @@ module Exists = struct
   let is_not_consecutive (i, _) (j, _) = i + 1 <> j
 
   let sexp_of_result (i, v) =
-    if render_writes then Sexp.Atom (sprintf "w[%d]=%s" i v)
-    else Sexp.Atom (sprintf "w[%d]" i)
+    let kind = if Set.mem !current_trace.priv_indexes i then "priv" else "w" in
+    if render_writes then Sexp.Atom (sprintf "%s[%d]=%s" kind i v)
+    else Sexp.Atom (sprintf "%s[%d]" kind i)
 
   let sexp_of_result_list results =
     match results with
@@ -75,7 +97,11 @@ module Exists = struct
              | many ->
                  let first_i = fst @@ List.hd_exn many in
                  let last_i = fst @@ List.last_exn many in
-                 [ Sexp.Atom (sprintf "w[%d..%d]" first_i last_i) ] )
+                 let kind =
+                   if Set.mem !current_trace.priv_indexes first_i then "priv"
+                   else "w"
+                 in
+                 [ Sexp.Atom (sprintf "%s[%d..%d]" kind first_i last_i) ] )
 
   type t =
     { mutable accesses : Cvar_access.t list; mutable results : result list }
@@ -170,10 +196,17 @@ module Call = struct
 
   let call_stack = ref [ empty "(root)" ]
 
-  let reset () = call_stack := [ empty "(root)" ]
+  let inside_request = ref [ false ]
+
+  let reset ?(root_label = "(root)") () =
+    call_stack := [ empty root_label ] ;
+    inside_request := [ false ] ;
+    current_trace := Trace.empty ~name:root_label ()
 
   let push label =
     let lbl = empty label in
+    inside_request :=
+      String.is_substring ~substring:"@request=" label :: !inside_request ;
     match List.hd_exn !call_stack with
     | Exists _ ->
         prerr_endline
@@ -193,6 +226,7 @@ module Call = struct
         call.inner_calls <-
           List.rev (List.filter ~f:no_empty_accesses call.inner_calls) ;
         call_stack := List.tl_exn !call_stack ;
+        inside_request := List.tl_exn !inside_request ;
         lbl
 
   let exists_stack = ref []
@@ -208,6 +242,10 @@ module Call = struct
 
   let track_write ~index field =
     let exists = List.hd_exn !exists_stack in
+    let inside_request = List.hd_exn !inside_request in
+    if inside_request then
+      !current_trace.priv_indexes <-
+        Int.Set.add !current_trace.priv_indexes index ;
     exists.results <- (index, field) :: exists.results
 
   let begin_exists_call () =
@@ -251,37 +289,16 @@ let track_access = Call.track_read
 
 let track_write = Call.track_write
 
-let dump_current job_str filename =
-  let call = Call.pop () in
-  let call_sexp = Call.sexp_of_t call in
-  let call_sexp_str = Sexp.to_string_hum call_sexp in
-  let oc = Out_channel.create filename in
-  Out_channel.output_string oc "Job:\n\n" ;
-  Out_channel.output_string oc job_str ;
-  Out_channel.output_string oc "\n\n=============\n\n" ;
-  Out_channel.output_string oc call_sexp_str ;
-  Out_channel.close oc
+let capture_begin root_label = Call.reset ~root_label ()
 
-(*let log_stored_fields ~sexp_of_field s stored_fields =
-  let stored_fields_sexp = List.sexp_of_t sexp_of_field stored_fields in
-  let indent = 2 * List.length (Run_state.stack s) in
-  let label = Option.value ~default:"(none)" @@ List.hd (Run_state.stack s) in
-  let indent_str = String.make (Int.max 0 (indent - 2)) ' ' in
-  let inputs_sexp =
-    List.sexp_of_t Cvar_access.sexp_of_t Cvar_access.(get ())
-  in
-  eprintf "%s%s: {\n" indent_str label ;
-  (* (*if List.length !stored_fields <= 1 then
-           eprintf "%s%s: %s\n%!" indent_str label
-             (Sexp.to_string_hum stored_fields_sexp)
-         else*)
-       eprintf "%s%s:\n%s input:\n%s  %s\n%s  %s\n%!" indent_str label
-         indent_str indent_str inputs indent_str
-         (Sexp.to_string_hum ~indent:(indent + 1) stored_fields_sexp)
-     else*)
-  eprintf "%s in: %s\n" indent_str
-    (Sexp.to_string_hum ~indent:(indent + 1) inputs_sexp) ;
-  if false then
-    eprintf "%s out:\n%s  %s\n" indent_str indent_str
-      (Sexp.to_string_hum ~indent:(indent + 1) stored_fields_sexp) ;
-  eprintf "%s}\n%!" indent_str*)
+let capture_end () =
+  !current_trace.trace_sexp <- Call.sexp_of_t (Call.pop ()) ;
+  captured_traces := !current_trace :: !captured_traces
+
+let dump_current job_str base_path =
+  Core.Unix.mkdir_p base_path;
+    let job_json_filename = Filename.concat base_path "spec.json" in
+  Out_channel.write_all job_json_filename ~data:job_str ;
+  List.iter !captured_traces ~f:(fun trace ->
+      let filename = Filename.concat base_path (trace.name ^ ".sexp") in
+      Out_channel.write_all filename ~data:(Sexp.to_string_hum trace.trace_sexp) )
