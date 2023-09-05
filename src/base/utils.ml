@@ -180,7 +180,7 @@ struct
   module Boolean = struct
     open Boolean.Unsafe
 
-    type var = Cvar.t Boolean.t
+    type var = Cvar.t Boolean.t [@@deriving sexp_of]
 
     type value = bool
 
