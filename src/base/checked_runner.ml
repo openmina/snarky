@@ -110,12 +110,12 @@ struct
   open Constraint
   open Backend
 
-  let tracked_get_value (t : Field.t Run_state.t) (c : Cvar.t) : Field.t =
+  let get_value (t : Field.t Run_state.t) (c : Cvar.t) : Field.t =
     let get_one i = Run_state.get_variable_value t i in
     Witness_tracing.track_access t (Cvar.sexp_of_t c) ;
     Cvar.eval (`Return_values_will_be_mutated get_one) c
 
-  let get_value (t : Field.t Run_state.t) : Cvar.t -> Field.t =
+  let untracked_get_value (t : Field.t Run_state.t) : Cvar.t -> Field.t =
     let get_one i = Run_state.get_variable_value t i in
     Cvar.eval (`Return_values_will_be_mutated get_one)
 
@@ -178,6 +178,7 @@ struct
         (Run_state.set_stack s' stack, y) )
 
   let log_constraint { basic; _ } s =
+    let get_value = untracked_get_value in
     match basic with
     | Boolean var ->
         Format.(asprintf "Boolean %s" (Field.to_string (get_value s var)))
@@ -218,7 +219,7 @@ struct
           if
             Run_state.eval_constraints s
             && !eval_constraints
-            && not (Constraint.eval c (get_value s))
+            && not (Constraint.eval c (untracked_get_value s))
           then
             failwithf
               "Constraint unsatisfied (unreduced):\n\
@@ -264,7 +265,7 @@ struct
           Run_state.set_as_prover s true ;
           Witness_tracing.begin_exists_call () ;
           let value =
-            As_prover.Provider.run p (Run_state.stack s) (tracked_get_value s)
+            As_prover.Provider.run p (Run_state.stack s) (get_value s)
               (Run_state.handler s)
           in
           Run_state.set_as_prover s old ;
